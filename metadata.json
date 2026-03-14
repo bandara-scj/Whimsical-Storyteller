@@ -1,0 +1,7 @@
+{
+  "name": "Remix: Feature Copy: The Whimsical Storyteller",
+  "description": "A magical visual storytelling app for children with voice interaction and dynamic stories.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
