@@ -1,6 +1,6 @@
-import { motion } from "motion/react";
+import { motion, AnimatePresence } from "motion/react";
 import { Mic, Volume2, Sparkles, Loader2, Square } from "lucide-react";
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 
 interface BookPageProps {
   story: string;
@@ -40,6 +40,35 @@ export function BookPage({
   const chunksRef = useRef<Blob[]>([]);
   const isStartingRef = useRef(false);
   const shouldStopRef = useRef(false);
+  const bgMusicRef = useRef<HTMLAudioElement>(null);
+
+  useEffect(() => {
+    if (bgMusicRef.current) {
+      bgMusicRef.current.volume = 0.15;
+      bgMusicRef.current.play().catch(e => console.log("Audio autoplay blocked:", e));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!bgMusicRef.current) return;
+
+    const targetVolume = isReading ? 0.03 : 0.15;
+    const audio = bgMusicRef.current;
+    
+    const fadeInterval = setInterval(() => {
+      const currentVolume = audio.volume;
+      const diff = targetVolume - currentVolume;
+      
+      if (Math.abs(diff) < 0.01) {
+        audio.volume = targetVolume;
+        clearInterval(fadeInterval);
+      } else {
+        audio.volume = Math.max(0, Math.min(1, currentVolume + (diff > 0 ? 0.01 : -0.01)));
+      }
+    }, 50);
+
+    return () => clearInterval(fadeInterval);
+  }, [isReading]);
 
   const startRecording = async () => {
     if (isStartingRef.current || isRecording) return;
@@ -93,6 +122,36 @@ export function BookPage({
 
   const words = story.split(' ');
   
+  // Parse words into dialogue and narrative segments
+  const segments: { isDialogue: boolean; words: { word: string; index: number }[] }[] = [];
+  let currentSegment: { isDialogue: boolean; words: { word: string; index: number }[] } = { isDialogue: false, words: [] };
+  let inDialogue = false;
+
+  words.forEach((word, index) => {
+    const startsWithQuote = /^["“]/.test(word);
+    const endsWithQuote = /["”][.,!?]*$/.test(word);
+
+    if (startsWithQuote && !inDialogue) {
+      inDialogue = true;
+      if (currentSegment.words.length > 0) {
+        segments.push(currentSegment);
+      }
+      currentSegment = { isDialogue: true, words: [] };
+    }
+
+    currentSegment.words.push({ word, index });
+
+    if (endsWithQuote && inDialogue) {
+      inDialogue = false;
+      segments.push(currentSegment);
+      currentSegment = { isDialogue: false, words: [] };
+    }
+  });
+
+  if (currentSegment.words.length > 0) {
+    segments.push(currentSegment);
+  }
+  
   const getOptionsText = () => {
     if (!options || options.length === 0) return "";
     let optionsText = "What do you think will happen next? ";
@@ -132,27 +191,58 @@ export function BookPage({
       exit={{ rotateY: -90, opacity: 0, scale: 0.95 }}
       transition={{ duration: 0.8, ease: [0.4, 0.0, 0.2, 1] }}
       style={{ transformOrigin: "left center", perspective: 2000 }}
-      className="w-full max-w-5xl h-[85vh] mx-auto bg-[#e8dcb8] rounded-sm shadow-[inset_0_0_60px_rgba(139,115,85,0.4),_10px_10px_30px_rgba(0,0,0,0.5)] overflow-hidden flex flex-col md:flex-row border-4 border-stone-800"
+      className="w-full max-w-5xl h-[85vh] mx-auto bg-[#e8dcb8] rounded-sm shadow-[inset_0_0_60px_rgba(139,115,85,0.4),_10px_10px_30px_rgba(0,0,0,0.5)] overflow-hidden border-4 border-stone-800 relative"
     >
-      {/* Left Page: Image */}
-      <div className="w-full md:w-1/2 p-6 md:p-10 border-b md:border-b-0 md:border-r-2 border-stone-700/50 border-dashed flex flex-col justify-center items-center bg-[#d4c4a1]/30 group relative shrink-0">
-        <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/aged-paper.png')] opacity-20 pointer-events-none mix-blend-multiply"></div>
-        <div className="relative w-full aspect-square rounded-sm overflow-hidden shadow-[inset_0_0_20px_rgba(0,0,0,0.5)] border-8 border-stone-800 transition-all duration-700 ease-out group-hover:scale-[1.05] group-hover:shadow-[0_0_40px_rgba(99,102,241,0.6)] group-hover:rotate-1 z-10">
-          {image ? (
-            <>
-              <img src={image} alt="Story illustration" className="w-full h-full object-cover transition-transform duration-1000 ease-out group-hover:scale-110 sepia-[0.2]" referrerPolicy="no-referrer" />
-              <div className="absolute inset-0 bg-indigo-900/20 mix-blend-overlay opacity-0 group-hover:opacity-100 transition-opacity duration-700"></div>
-            </>
-          ) : (
-            <div className="w-full h-full flex items-center justify-center bg-stone-800 text-amber-600">
-              <Sparkles className="w-12 h-12 animate-pulse" />
+      <audio 
+        ref={bgMusicRef} 
+        src="https://upload.wikimedia.org/wikipedia/commons/1/14/Tchaikovsky%2C_Pyotr_Ilyich_-_The_Nutcracker_Suite%2C_Op._71a_-_IIc._Dance_of_the_Sugar_Plum_Fairy.ogg" 
+        loop 
+      />
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={`spread-${currentPage}`}
+          initial="hidden"
+          animate="visible"
+          exit="exit"
+          className="w-full h-full flex flex-col md:flex-row absolute inset-0"
+        >
+          {/* Left Page: Image */}
+          <motion.div 
+            variants={{
+              hidden: { rotateY: 90, opacity: 0 },
+              visible: { rotateY: 0, opacity: 1 },
+              exit: { opacity: 0 }
+            }}
+            transition={{ duration: 0.6, ease: "easeInOut" }}
+            style={{ transformOrigin: "right center" }}
+            className="w-full md:w-1/2 p-6 md:p-10 border-b md:border-b-0 md:border-r-2 border-stone-700/50 border-dashed flex flex-col justify-center items-center bg-[#d4c4a1]/30 group relative shrink-0"
+          >
+            <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/aged-paper.png')] opacity-20 pointer-events-none mix-blend-multiply"></div>
+            <div className="relative w-full aspect-square rounded-sm overflow-hidden shadow-[inset_0_0_20px_rgba(0,0,0,0.5)] border-8 border-stone-800 transition-all duration-700 ease-out group-hover:scale-[1.05] group-hover:shadow-[0_0_40px_rgba(99,102,241,0.6)] group-hover:rotate-1 z-10">
+              {image ? (
+                <>
+                  <img src={image} alt="Story illustration" className="w-full h-full object-cover transition-transform duration-1000 ease-out group-hover:scale-110 sepia-[0.2]" referrerPolicy="no-referrer" />
+                  <div className="absolute inset-0 bg-indigo-900/20 mix-blend-overlay opacity-0 group-hover:opacity-100 transition-opacity duration-700"></div>
+                </>
+              ) : (
+                <div className="w-full h-full flex items-center justify-center bg-stone-800 text-amber-600">
+                  <Sparkles className="w-12 h-12 animate-pulse" />
+                </div>
+              )}
             </div>
-          )}
-        </div>
-      </div>
+          </motion.div>
 
-      {/* Right Page: Text & Options */}
-      <div className="w-full md:w-1/2 p-6 md:p-10 flex flex-col bg-[#e8dcb8] relative overflow-y-auto custom-scrollbar">
+          {/* Right Page: Text & Options */}
+          <motion.div 
+            variants={{
+              hidden: { opacity: 0 },
+              visible: { opacity: 1 },
+              exit: { rotateY: -90, opacity: 0 }
+            }}
+            transition={{ duration: 0.6, ease: "easeInOut" }}
+            style={{ transformOrigin: "left center" }}
+            className="w-full md:w-1/2 p-6 md:p-10 flex flex-col bg-[#e8dcb8] relative overflow-y-auto custom-scrollbar"
+          >
         <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/aged-paper.png')] opacity-20 pointer-events-none mix-blend-multiply"></div>
         <div className="relative z-10 flex-1 flex flex-col">
           <div className="flex flex-col items-center mb-6 shrink-0">
@@ -173,12 +263,19 @@ export function BookPage({
 
           <div className="flex justify-between items-start mb-6 shrink-0">
             <h2 className="font-serif text-2xl md:text-4xl text-stone-900 leading-relaxed drop-shadow-sm select-text cursor-text font-medium">
-              {words.map((word, i) => (
+              {segments.map((segment, sIdx) => (
                 <span 
-                  key={i} 
-                  className={`transition-colors duration-200 ${isReading && i === currentWordIndex ? 'bg-amber-300/60 text-amber-950 rounded-md px-1' : ''}`}
+                  key={sIdx} 
+                  className={segment.isDialogue ? "text-violet-900 font-semibold italic bg-white/60 px-2 py-1 rounded-xl shadow-sm border border-violet-200/50 mx-1 box-decoration-clone" : ""}
                 >
-                  {word}{' '}
+                  {segment.words.map((w) => (
+                    <span 
+                      key={w.index} 
+                      className={`transition-colors duration-200 ${isReading && w.index === currentWordIndex ? 'bg-amber-300/60 text-amber-950 rounded-md px-1' : ''}`}
+                    >
+                      {w.word}{' '}
+                    </span>
+                  ))}
                 </span>
               ))}
             </h2>
@@ -260,8 +357,10 @@ export function BookPage({
             </button>
           </div>
         </div>
-      </div>
-    </div>
+        </div>
+      </motion.div>
+      </motion.div>
+      </AnimatePresence>
     </motion.div>
   );
 }

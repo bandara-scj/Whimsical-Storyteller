@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { Sparkles, BookOpen, Wand2, Loader2, Save, X, Library } from "lucide-react";
+import { Sparkles, BookOpen, Wand2, Loader2, Save, X, Library, VolumeX, Volume2, RotateCcw } from "lucide-react";
 import { BookPage } from "./components/BookPage";
 import { generateStoryStart, generateNextSegment, generateIllustration, generateNarration, processVoiceInput, generateStoryEnding } from "./services/gemini";
 import { playAudio } from "./utils/audio";
@@ -18,6 +18,8 @@ type SavedStory = {
   theme: string;
   characterDesc: string;
   history: StorySegment[];
+  currentIndex: number;
+  finalSentence?: string;
   date: string;
 };
 
@@ -34,8 +36,10 @@ export default function App() {
   const [isGeneratingNext, setIsGeneratingNext] = useState(false);
   const [selectedOption, setSelectedOption] = useState<string | null>(null);
   const [savedStories, setSavedStories] = useState<SavedStory[]>([]);
+  const [currentStoryId, setCurrentStoryId] = useState<string | null>(null);
   const [showLibrary, setShowLibrary] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [isNarratorEnabled, setIsNarratorEnabled] = useState(true);
   const [audioProgress, setAudioProgress] = useState(0);
   const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const bgMusicRef = useRef<HTMLAudioElement | null>(null);
@@ -61,18 +65,37 @@ export default function App() {
 
   const saveStory = () => {
     if (storyHistory.length === 0) return;
-    const newStory: SavedStory = {
-      id: Date.now().toString(),
-      title: storyTitle || "A Magical Tale",
-      theme,
-      characterDesc,
-      history: storyHistory,
-      date: new Date().toISOString()
-    };
-    const updated = [newStory, ...savedStories];
+    
+    const now = new Date().toISOString();
+    let updated: SavedStory[];
+
+    if (currentStoryId) {
+      // Update existing story
+      updated = savedStories.map(s => 
+        s.id === currentStoryId 
+          ? { ...s, history: storyHistory, currentIndex, finalSentence: status === 'showing_end' ? finalSentence : undefined, date: now }
+          : s
+      );
+    } else {
+      // Create new story
+      const newId = Date.now().toString();
+      const newStory: SavedStory = {
+        id: newId,
+        title: storyTitle || "A Magical Tale",
+        theme,
+        characterDesc,
+        history: storyHistory,
+        currentIndex: currentIndex,
+        finalSentence: status === 'showing_end' ? finalSentence : undefined,
+        date: now
+      };
+      setCurrentStoryId(newId);
+      updated = [newStory, ...savedStories];
+    }
+
     setSavedStories(updated);
     localStorage.setItem('whimsical_stories', JSON.stringify(updated));
-    showToast("Story saved to your library!");
+    showToast("Progress saved to your library!");
   };
 
   const loadStory = (story: SavedStory) => {
@@ -80,9 +103,17 @@ export default function App() {
     setTheme(story.theme);
     setCharacterDesc(story.characterDesc);
     setStoryHistory(story.history);
-    setCurrentIndex(0);
+    setCurrentIndex(story.currentIndex ?? 0);
+    setCurrentStoryId(story.id);
     setShowLibrary(false);
-    setStatus('opening_book');
+    
+    if (story.finalSentence) {
+      setFinalSentence(story.finalSentence);
+      setStatus('showing_end');
+    } else {
+      setFinalSentence("");
+      setStatus('opening_book');
+    }
     
     if (bgMusicRef.current) {
       bgMusicRef.current.volume = 0.05;
@@ -92,17 +123,19 @@ export default function App() {
 
   const particleColors = [
     "bg-white",
-    "bg-yellow-100",
     "bg-blue-100",
-    "bg-amber-100",
-    "bg-purple-100"
+    "bg-slate-100",
+    "bg-indigo-100",
+    "bg-yellow-50"
   ];
 
   const currentSegment = currentIndex >= 0 ? storyHistory[currentIndex] : null;
   const dynamicColor = currentSegment?.moodColor || "#1e3a8a"; // Default deep blue
   const currentParticleColor = currentIndex >= 0 ? particleColors[currentIndex % particleColors.length] : particleColors[0];
 
-  const playNarration = async (storyText: string, options?: string[], isFirstPage: boolean = false) => {
+  const playNarration = async (storyText: string, options?: string[], isFirstPage: boolean = false, forcePlay: boolean = false) => {
+    if (!isNarratorEnabled && !forcePlay) return;
+    
     setIsReading(true);
     setAudioProgress(0);
     try {
@@ -160,6 +193,7 @@ export default function App() {
 
   const handleStart = async () => {
     setStatus('generating_start');
+    setCurrentStoryId(null);
     try {
       const { title, story, options, imagePrompt, moodColor, characterDescription } = await generateStoryStart(theme);
       setCharacterDesc(characterDescription || "");
@@ -252,7 +286,7 @@ export default function App() {
     }
     
     const currentSegment = storyHistory[currentIndex];
-    playNarration(currentSegment.story, currentSegment.options, currentIndex === 0);
+    playNarration(currentSegment.story, currentSegment.options, currentIndex === 0, true);
   };
 
   const stopNarration = () => {
@@ -265,12 +299,27 @@ export default function App() {
     cancelAnimationFrame(animationRef.current);
   };
 
+  const handleStartOver = () => {
+    stopNarration();
+    setStatus('idle');
+    setStoryHistory([]);
+    setCurrentIndex(-1);
+    setCurrentStoryId(null);
+    setTheme("");
+    setFinalSentence("");
+    setCharacterDesc("");
+    if (bgMusicRef.current) {
+      bgMusicRef.current.pause();
+      bgMusicRef.current.currentTime = 0;
+    }
+  };
+
   useEffect(() => {
     if (status === 'opening_book') {
       const timer = setTimeout(() => {
         setStatus('reading');
-        if (storyHistory.length > 0) {
-          playNarration(storyHistory[0].story, storyHistory[0].options, true);
+        if (storyHistory.length > 0 && currentIndex >= 0) {
+          playNarration(storyHistory[currentIndex].story, storyHistory[currentIndex].options, currentIndex === 0);
         }
       }, 2500); // Wait for cover animation before showing page
       return () => clearTimeout(timer);
@@ -279,6 +328,7 @@ export default function App() {
         setStatus('idle');
         setStoryHistory([]);
         setCurrentIndex(-1);
+        setCurrentStoryId(null);
         setTheme("");
         setFinalSentence("");
         setCharacterDesc("");
@@ -289,17 +339,59 @@ export default function App() {
       }, 2500);
       return () => clearTimeout(timer);
     }
-  }, [status, storyHistory]);
+  }, [status, storyHistory, currentIndex]);
 
   useEffect(() => {
     return () => stopNarration();
   }, []);
 
   return (
-    <div className="fixed inset-0 bg-gradient-to-b from-indigo-950 via-purple-950 to-blue-950 text-amber-100/80 overflow-hidden flex flex-col font-serif">
+    <div className="fixed inset-0 bg-gradient-to-b from-slate-950 via-indigo-950 to-slate-900 text-amber-100/80 overflow-hidden flex flex-col font-serif">
       <audio ref={bgMusicRef} src="https://upload.wikimedia.org/wikipedia/commons/c/c2/Greensleeves_%28traditional%29.ogg" loop />
       {/* Magical Particles Background */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        {/* Moon */}
+        <div className="absolute top-10 right-10 md:top-20 md:right-32 w-24 h-24 md:w-32 md:h-32 rounded-full bg-amber-100/90 shadow-[0_0_60px_20px_rgba(253,230,138,0.3)] flex items-center justify-center">
+          <div className="absolute inset-0 rounded-full bg-gradient-to-br from-transparent to-amber-900/20"></div>
+          {/* Moon craters */}
+          <div className="absolute top-4 left-6 w-4 h-4 rounded-full bg-amber-900/10 blur-[1px]"></div>
+          <div className="absolute top-10 right-8 w-6 h-5 rounded-full bg-amber-900/10 blur-[1px]"></div>
+          <div className="absolute bottom-6 left-10 w-8 h-6 rounded-full bg-amber-900/10 blur-[1px]"></div>
+        </div>
+
+        {/* Shooting Comets */}
+        <motion.div
+          className="absolute h-1 w-32 md:w-48 bg-gradient-to-r from-transparent via-white/80 to-white rounded-full blur-[1px]"
+          style={{ top: '-10%', right: '-10%', rotate: '135deg' }}
+          animate={{
+            x: ['0vw', '-120vw'],
+            y: ['0vh', '120vh'],
+            opacity: [0, 1, 1, 0]
+          }}
+          transition={{
+            duration: 3,
+            repeat: Infinity,
+            repeatDelay: 15,
+            ease: "linear"
+          }}
+        />
+        <motion.div
+          className="absolute h-1 w-24 bg-gradient-to-r from-transparent via-blue-200/80 to-white rounded-full blur-[1px]"
+          style={{ top: '30%', right: '-10%', rotate: '135deg' }}
+          animate={{
+            x: ['0vw', '-100vw'],
+            y: ['0vh', '100vh'],
+            opacity: [0, 1, 1, 0]
+          }}
+          transition={{
+            duration: 2.5,
+            repeat: Infinity,
+            repeatDelay: 25,
+            delay: 8,
+            ease: "linear"
+          }}
+        />
+
         {[...Array(40)].map((_, i) => (
           <motion.div
             key={i}
@@ -327,20 +419,36 @@ export default function App() {
 
       {/* Header */}
       <header className="h-20 md:h-24 flex-shrink-0 flex items-center justify-between px-4 md:px-8 z-20 relative">
-        <div className="w-24 md:w-32 flex justify-start">
-          {status === 'idle' && savedStories.length > 0 && (
+        <div className="w-auto md:w-48 flex justify-start gap-2 md:gap-4">
+          {(status === 'idle' || status === 'reading' || status === 'showing_end') && savedStories.length > 0 && (
             <button onClick={() => setShowLibrary(true)} className="text-amber-200 hover:text-amber-100 flex items-center gap-2 font-bold transition-colors">
               <Library className="w-5 h-5 md:w-6 md:h-6" /> 
               <span className="hidden md:inline">Library</span>
             </button>
           )}
+          {(status === 'reading' || status === 'showing_end') && (
+            <button onClick={handleStartOver} className="text-amber-200 hover:text-amber-100 flex items-center gap-2 font-bold transition-colors">
+              <RotateCcw className="w-5 h-5 md:w-6 md:h-6" /> 
+              <span className="hidden md:inline">Start Over</span>
+            </button>
+          )}
+          <button 
+            onClick={() => {
+              setIsNarratorEnabled(!isNarratorEnabled);
+              if (isNarratorEnabled && isReading) stopNarration();
+            }} 
+            className="text-amber-200 hover:text-amber-100 flex items-center gap-2 font-bold transition-colors"
+            title={isNarratorEnabled ? "Mute Narrator" : "Enable Narrator"}
+          >
+            {isNarratorEnabled ? <Volume2 className="w-5 h-5 md:w-6 md:h-6" /> : <VolumeX className="w-5 h-5 md:w-6 md:h-6" />}
+          </button>
         </div>
         <h1 className="text-2xl md:text-5xl font-bold tracking-wider text-transparent bg-clip-text bg-gradient-to-r from-amber-400 to-yellow-200 drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)] flex items-center gap-2 md:gap-4 text-center">
           <Sparkles className="w-6 h-6 md:w-10 md:h-10 text-amber-400 hidden sm:block animate-pulse" />
           The Whimsical Storyteller
           <Sparkles className="w-6 h-6 md:w-10 md:h-10 text-amber-400 hidden sm:block animate-pulse" />
         </h1>
-        <div className="w-24 md:w-32 flex justify-end">
+        <div className="w-24 md:w-48 flex justify-end">
           {(status === 'reading' || status === 'showing_end') && (
             <button onClick={saveStory} className="text-amber-200 hover:text-amber-100 flex items-center gap-2 font-bold transition-colors">
               <Save className="w-5 h-5 md:w-6 md:h-6" /> 
@@ -367,41 +475,58 @@ export default function App() {
       {/* Main Content Area */}
       <div className="flex-1 w-full max-w-7xl mx-auto p-4 md:p-8 flex items-center justify-center relative perspective-[2500px]">
         <AnimatePresence mode="wait">
-          {status === 'idle' && (
+          {(status === 'idle' || status === 'generating_start') && (
             <motion.div 
               key="idle"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-              className="w-full max-w-md md:max-w-lg aspect-[3/4] h-full max-h-[80vh] bg-indigo-900 rounded-r-2xl rounded-l-sm shadow-[20px_20px_60px_rgba(0,0,0,0.8)] flex flex-col items-center justify-center border-8 border-indigo-950 p-8 absolute z-10"
+              exit={{ opacity: 0, scale: 1.05, transition: { duration: 0.5 } }}
+              className="w-full max-w-md md:max-w-xl aspect-[3/4] md:aspect-[4/5] h-full max-h-[85vh] bg-[#3e2723] rounded-r-3xl rounded-l-sm shadow-[20px_20px_60px_rgba(0,0,0,0.9)] flex flex-col items-center justify-center border-y-8 border-r-8 border-l-[16px] border-[#2d1b15] p-4 absolute z-10"
             >
-              <div className="w-full max-w-md md:max-w-lg aspect-[3/4] h-full max-h-[80vh] bg-violet-900 rounded-r-3xl rounded-l-md shadow-[20px_20px_60px_rgba(0,0,0,0.8)] flex flex-col items-center justify-center border-8 border-violet-950 p-8 absolute z-10">
-                <div className="w-full h-full border-4 border-violet-800/50 rounded-xl p-6 flex flex-col items-center justify-center bg-violet-900/40 relative overflow-hidden">
-                  <BookOpen className="w-20 h-20 text-amber-400 mx-auto mb-6 opacity-90 animate-bounce" style={{ animationDuration: '3s' }} />
-                  <h2 className="text-3xl text-amber-100 font-serif mb-6 text-center font-bold drop-shadow-md leading-tight">What kind of tale shall we weave?</h2>
-                  
-                  <textarea
-                    value={theme}
-                    onChange={(e) => setTheme(e.target.value)}
-                    className="w-full bg-violet-950/50 border-2 border-violet-700 rounded-2xl p-5 text-amber-50 placeholder-violet-300 focus:outline-none focus:ring-2 focus:ring-amber-400 focus:border-amber-400 resize-none h-32 text-xl md:text-2xl mb-8 font-serif shadow-inner"
-                    placeholder="e.g. a brave little fox who wants to touch the moon..."
-                  />
-                  
-                  <button
-                    onClick={handleStart}
-                    className="w-full bg-gradient-to-b from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-white border-4 border-orange-700 font-bold text-2xl py-5 px-8 rounded-3xl shadow-[0_10px_20px_rgba(0,0,0,0.4)] transform transition hover:scale-[1.05] active:scale-[0.95] flex items-center justify-center gap-4"
-                  >
-                    <Wand2 className="w-8 h-8 text-yellow-200" />
-                    Open the Book
-                  </button>
-                </div>
+              <div className="w-full h-full border-2 border-[#5d4037] rounded-xl p-6 md:p-10 flex flex-col items-center justify-center bg-[#4e342e] relative overflow-hidden shadow-[inset_0_0_40px_rgba(0,0,0,0.8)]">
+                {/* Corner ornaments */}
+                <div className="absolute top-2 left-2 w-8 h-8 border-t-2 border-l-2 border-[#8d6e63] rounded-tl-lg opacity-50"></div>
+                <div className="absolute top-2 right-2 w-8 h-8 border-t-2 border-r-2 border-[#8d6e63] rounded-tr-lg opacity-50"></div>
+                <div className="absolute bottom-2 left-2 w-8 h-8 border-b-2 border-l-2 border-[#8d6e63] rounded-bl-lg opacity-50"></div>
+                <div className="absolute bottom-2 right-2 w-8 h-8 border-b-2 border-r-2 border-[#8d6e63] rounded-br-lg opacity-50"></div>
+
+                <BookOpen className="w-16 h-16 text-[#d7ccc8] mx-auto mb-6 opacity-80" />
+                <h2 className="text-3xl md:text-4xl text-[#ffecb3] font-serif mb-8 text-center font-bold drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)] leading-tight tracking-wide">
+                  What kind of tale shall we weave?
+                </h2>
+                
+                <textarea
+                  value={theme}
+                  onChange={(e) => setTheme(e.target.value)}
+                  disabled={status === 'generating_start'}
+                  className="w-full max-w-xl bg-[#f4e4bc] border-2 border-[#8d6e63] rounded-sm p-4 text-[#3e2723] placeholder-[#8d6e63] focus:outline-none focus:ring-2 focus:ring-[#5d4037] resize-none h-24 md:h-32 text-xl md:text-2xl mb-8 font-serif shadow-[inset_0_3px_10px_rgba(0,0,0,0.2)] overflow-hidden disabled:opacity-70"
+                  placeholder="e.g. a brave little fox who wants to touch the moon..."
+                />
+                
+                <button
+                  onClick={handleStart}
+                  disabled={status === 'generating_start'}
+                  className="w-full max-w-md bg-gradient-to-b from-[#5d4037] to-[#3e2723] hover:from-[#6d4c41] hover:to-[#4e342e] text-[#ffecb3] border-2 border-[#8d6e63] font-bold text-xl md:text-2xl py-4 px-8 rounded-sm shadow-[0_5px_15px_rgba(0,0,0,0.6)] transform transition hover:scale-[1.02] active:scale-[0.98] disabled:hover:scale-100 disabled:opacity-80 flex items-center justify-center gap-4 uppercase tracking-widest"
+                >
+                  {status === 'generating_start' ? (
+                    <>
+                      <Loader2 className="w-6 h-6 text-[#ffecb3] animate-spin" />
+                      Inscribing...
+                    </>
+                  ) : (
+                    <>
+                      <Wand2 className="w-6 h-6 text-[#ffecb3]" />
+                      Open the Book
+                    </>
+                  )}
+                </button>
               </div>
             </motion.div>
           )}
 
-          {(status === 'generating_start' || status === 'generating_end') && (
+          {status === 'generating_end' && (
             <motion.div 
-              key="generating"
+              key="generating_end"
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 1.1 }}
@@ -414,7 +539,7 @@ export default function App() {
                 <Sparkles className="absolute inset-0 m-auto w-12 h-12 text-amber-500 animate-pulse" />
               </div>
               <h2 className="text-3xl font-serif text-amber-500 animate-pulse">
-                {status === 'generating_start' ? 'Inscribing the first page...' : 'Writing the final words...'}
+                Writing the final words...
               </h2>
               <p className="text-stone-400 mt-4 text-lg italic">Patience, dear reader...</p>
             </motion.div>
@@ -424,14 +549,14 @@ export default function App() {
             <motion.div
               key="opening_book"
               exit={{ opacity: 0 }}
-              className="relative w-full max-w-md md:max-w-lg aspect-[3/4] h-full max-h-[80vh] z-50 perspective-[2500px]"
+              className="relative w-full max-w-md md:max-w-xl aspect-[3/4] md:aspect-[4/5] h-full max-h-[85vh] z-50 perspective-[2500px]"
             >
               {/* Back cover (static) */}
               <motion.div 
                 initial={{ opacity: 0, scale: 0.9 }}
                 animate={{ opacity: [0, 1, 1, 0], scale: [0.9, 1, 1, 1] }}
                 transition={{ duration: 2.5, times: [0, 0.1, 0.8, 1], ease: "easeInOut" }}
-                className="absolute inset-0 bg-violet-900 rounded-r-3xl rounded-l-md shadow-[20px_20px_60px_rgba(0,0,0,0.8)] border-8 border-violet-950" 
+                className="absolute inset-0 bg-[#3e2723] rounded-r-3xl rounded-l-sm shadow-[20px_20px_60px_rgba(0,0,0,0.9)] border-y-8 border-r-8 border-l-[16px] border-[#2d1b15]" 
               />
               
               {/* Glowing light from inside */}
@@ -498,21 +623,33 @@ export default function App() {
                 }}
                 transition={{ duration: 2.5, times: [0, 0.1, 0.8, 1], ease: "easeInOut" }}
                 style={{ transformOrigin: "left center", zIndex: 30 }}
-                className="absolute inset-0 bg-violet-900 rounded-r-3xl rounded-l-md shadow-[10px_10px_30px_rgba(0,0,0,0.5)] flex flex-col items-center justify-center border-8 border-violet-950 p-8"
+                className="absolute inset-0 bg-[#3e2723] rounded-r-3xl rounded-l-sm shadow-[10px_10px_30px_rgba(0,0,0,0.5)] flex flex-col items-center justify-center border-y-8 border-r-8 border-l-[16px] border-[#2d1b15] p-4"
               >
-                <div className="w-full h-full border-4 border-violet-800/50 rounded-xl p-6 flex flex-col items-center justify-center bg-violet-900/40 relative overflow-hidden">
-                  <Sparkles className="w-20 h-20 text-amber-400 mb-8 animate-pulse" />
-                  <h1 className="text-4xl md:text-6xl font-serif text-amber-100 text-center leading-tight drop-shadow-lg font-bold">
+                <div className="w-full h-full border-2 border-[#5d4037] rounded-xl p-6 flex flex-col items-center justify-center bg-[#4e342e] relative overflow-hidden shadow-[inset_0_0_40px_rgba(0,0,0,0.8)]">
+                  {/* Corner ornaments */}
+                  <div className="absolute top-2 left-2 w-8 h-8 border-t-2 border-l-2 border-[#8d6e63] rounded-tl-lg opacity-50"></div>
+                  <div className="absolute top-2 right-2 w-8 h-8 border-t-2 border-r-2 border-[#8d6e63] rounded-tr-lg opacity-50"></div>
+                  <div className="absolute bottom-2 left-2 w-8 h-8 border-b-2 border-l-2 border-[#8d6e63] rounded-bl-lg opacity-50"></div>
+                  <div className="absolute bottom-2 right-2 w-8 h-8 border-b-2 border-r-2 border-[#8d6e63] rounded-br-lg opacity-50"></div>
+
+                  <Sparkles className="w-16 h-16 text-[#ffecb3] mb-8 animate-pulse opacity-80" />
+                  <h1 className="text-4xl md:text-5xl font-serif text-[#ffecb3] text-center leading-tight drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)] font-bold">
                     {storyTitle}
                   </h1>
-                  <div className="mt-12 w-32 h-2 bg-violet-700 rounded-full"></div>
+                  <div className="mt-12 w-32 h-1 bg-[#8d6e63] rounded-full opacity-50"></div>
                 </div>
               </motion.div>
             </motion.div>
           )}
 
           {status === 'reading' && currentIndex >= 0 && (
-            <motion.div key={`page-${currentIndex}`} className="w-full h-full flex justify-center absolute inset-0 items-center">
+            <motion.div 
+              key="reading"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0, transition: { duration: 0.5 } }}
+              className="w-full h-full flex justify-center absolute inset-0 items-center perspective-[2500px]"
+            >
               <BookPage
                 story={storyHistory[currentIndex].story}
                 image={storyHistory[currentIndex].image}
@@ -627,7 +764,12 @@ export default function App() {
                       <p className="text-indigo-300 text-sm mb-4 line-clamp-2 italic flex-1">"{story.theme}"</p>
                       <div className="flex justify-between items-center text-xs text-indigo-400 font-sans border-t border-indigo-800/50 pt-3 mt-auto">
                         <span>{new Date(story.date).toLocaleDateString()}</span>
-                        <span className="bg-indigo-900 px-2 py-1 rounded-full">{story.history.length} pages</span>
+                        <div className="flex gap-2">
+                          {story.currentIndex !== undefined && story.currentIndex > 0 && (
+                            <span className="bg-amber-900/50 text-amber-200 px-2 py-1 rounded-full">Resume pg {story.currentIndex + 1}</span>
+                          )}
+                          <span className="bg-indigo-900 px-2 py-1 rounded-full">{story.history.length} pages</span>
+                        </div>
                       </div>
                     </div>
                   ))}
